@@ -1,0 +1,36 @@
+name: Collect Threads Data (Vietnam)
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # Chạy mỗi 1 tiếng
+  workflow_dispatch:      # Cho phép bấm chạy bằng tay trên GitHub
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        
+    - name: Install dependencies
+      run: npm install
+      
+    - name: Install Playwright browsers
+      run: npx playwright install chromium --with-deps
+      
+    - name: Collect Data
+      run: npm run collect
+      
+    - name: Commit and Push
+      run: |
+        git config --global user.name "GitHub Action Bot"
+        git config --global user.email "action@github.com"
+        git add data/
+        git commit -m "Auto-update Threads VN trending data" || exit 0
+        git push

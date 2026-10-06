@@ -1,0 +1,12 @@
+{
+  "name": "threads-scraper-vn",
+  "version": "1.0.0",
+  "description": "Auto-collect Threads trending data for Vietnam",
+  "main": "index.js",
+  "scripts": {
+    "collect": "node scripts/collect.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.42.0"
+  }
+}
