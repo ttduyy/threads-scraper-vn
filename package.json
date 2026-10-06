@@ -4,7 +4,8 @@
   "description": "Auto-collect Threads trending data for Vietnam",
   "main": "index.js",
   "scripts": {
-    "collect": "node scripts/collect.mjs"
+    "collect": "node scripts/collect.mjs",
+    "login": "node scripts/login.mjs"
   },
   "dependencies": {
     "playwright": "^1.42.0"
