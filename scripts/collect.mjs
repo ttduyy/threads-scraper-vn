@@ -5,12 +5,144 @@ const MOBILE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleW
 
 console.log(`Starting Threads Dynamic Trending Scraper`);
 
+function normalizeKeyword(value) {
+  if (typeof value !== "string") return "";
+  return value.replace(/^[\s"'`]+|[\s"'`]+$/g, "").trim();
+}
+
+function isLikelyKeyword(value) {
+  const keyword = normalizeKeyword(value);
+  if (!keyword || keyword.length < 2 || keyword.length > 80) return false;
+  if (!/[A-Za-z]/.test(keyword)) return false;
+  if (/https?:\/\//i.test(keyword) || /<\/?[a-z][\s\S]*>/i.test(keyword)) return false;
+
+  const lower = keyword.toLowerCase();
+  const blocked = [
+    "search",
+    "follow",
+    "terms",
+    "policy",
+    "threads",
+    "instagram",
+    "login",
+    "signup",
+    "account",
+    "privacy",
+    "help",
+    "about",
+    "trending topics",
+    "trending"
+  ];
+
+  return !blocked.some((item) => lower === item || lower.includes(item));
+}
+
+function addKeyword(list, value) {
+  const keyword = normalizeKeyword(value);
+  if (!isLikelyKeyword(keyword)) return;
+
+  if (!list.includes(keyword)) {
+    list.push(keyword);
+  }
+}
+
+function collectKeywordsFromText(text, list) {
+  if (!text || typeof text !== "string") return;
+
+  const keyPatterns = [
+    /"(?:query|keyword|name|title|label|text)"\s*:\s*"([^"\\]{2,80})"/gi,
+    /'(?:query|keyword|name|title|label|text)'\s*:\s*'([^'\\]{2,80})'/gi,
+    /(?:^|[\s\p{P}])#([A-Za-z0-9_]{2,40})(?=$|[\s\p{P}])/gu,
+    /(?:^|[\s\p{P}])([A-Za-z][A-Za-z0-9_\-\s]{2,40})(?=$|[\s\p{P}])/g
+  ];
+
+  for (const pattern of keyPatterns) {
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      const candidate = match[1] || match[0];
+      addKeyword(list, candidate);
+    }
+  }
+}
+
+function collectKeywordsFromObject(obj, list) {
+  if (!obj || typeof obj !== "object") return;
+
+  if (Array.isArray(obj)) {
+    for (const item of obj) collectKeywordsFromObject(item, list);
+    return;
+  }
+
+  for (const [key, value] of Object.entries(obj)) {
+    if (typeof value === "string") {
+      if (["query", "keyword", "name", "title", "text", "label", "hashtag"].includes(key.toLowerCase())) {
+        addKeyword(list, value);
+      }
+
+      const lowerKey = key.toLowerCase();
+      if (lowerKey.includes("trending") || lowerKey.includes("topic") || lowerKey.includes("hashtag") || lowerKey.includes("search")) {
+        addKeyword(list, value);
+      }
+
+      if (value.includes("trending") || value.includes("topic") || value.includes("hashtag") || value.includes("search")) {
+        collectKeywordsFromText(value, list);
+      }
+    } else if (value && typeof value === "object") {
+      collectKeywordsFromObject(value, list);
+    }
+  }
+}
+
+function extractKeywordsFromHtml(html) {
+  const keywords = [];
+
+  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+  for (const [, scriptBody] of scripts) {
+    if (!scriptBody) continue;
+
+    if (scriptBody.includes("trending") || scriptBody.includes("topic") || scriptBody.includes("hashtag") || scriptBody.includes("search")) {
+      collectKeywordsFromText(scriptBody, keywords);
+    }
+
+    try {
+      const parsed = JSON.parse(scriptBody);
+      collectKeywordsFromObject(parsed, keywords);
+    } catch {
+      // ignore non-JSON script blocks
+    }
+  }
+
+  const jsonScripts = [...html.matchAll(/<script[^>]*type=["']application\/json["'][^>]*>([\s\S]*?)<\/script>/gi)];
+  for (const [, scriptBody] of jsonScripts) {
+    try {
+      const parsed = JSON.parse(scriptBody);
+      collectKeywordsFromObject(parsed, keywords);
+    } catch {
+      // ignore invalid JSON
+    }
+  }
+
+  const nextData = html.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (nextData && nextData[1]) {
+    try {
+      const parsed = JSON.parse(nextData[1]);
+      collectKeywordsFromObject(parsed, keywords);
+    } catch {
+      // ignore invalid JSON
+    }
+  }
+
+  return [...new Set(keywords)]
+    .filter((word) => word && word.length > 1)
+    .slice(0, 15);
+}
+
 async function getTrendingKeywords(browser) {
   console.log("Navigating to https://www.threads.net/search to extract Trending topics...");
   const context = await browser.newContext({
     userAgent: MOBILE_UA,
     viewport: { width: 390, height: 844 },
-    locale: 'vi-VN'
+    locale: "vi-VN"
   });
 
   const rawCookie = process.env.THREADS_COOKIE;
@@ -21,13 +153,22 @@ async function getTrendingKeywords(browser) {
       await context.addCookies(parsedCookies);
     } catch (e) {
       console.log("Failed to parse THREADS_COOKIE as JSON, trying as raw string...");
-      // Hỗ trợ truyền sessionid trực tiếp (rất phổ biến)
-      if (rawCookie.includes("=")) {
-        const parts = rawCookie.split(";").map(p => p.trim()).filter(Boolean);
-        const cookies = parts.map(p => {
-          const [name, ...val] = p.split("=");
-          return { name, value: val.join("="), domain: ".threads.net", path: "/" };
-        });
+      const parts = rawCookie
+        .split(";")
+        .map((p) => p.trim())
+        .filter(Boolean);
+
+      const cookies = [];
+      for (const part of parts) {
+        const separatorIndex = part.indexOf("=");
+        if (separatorIndex === -1) continue;
+        const name = part.slice(0, separatorIndex).trim();
+        const value = part.slice(separatorIndex + 1).trim();
+        if (!name) continue;
+        cookies.push({ name, value, domain: ".threads.net", path: "/" });
+      }
+
+      if (cookies.length > 0) {
         await context.addCookies(cookies);
       } else {
         await context.addCookies([{ name: "sessionid", value: rawCookie, domain: ".threads.net", path: "/" }]);
@@ -36,76 +177,57 @@ async function getTrendingKeywords(browser) {
   }
 
   const page = await context.newPage();
-  
   let trendingKeywords = [];
   let debugPayloads = [];
 
-  page.on('response', async (response) => {
+  page.on("response", async (response) => {
     const url = response.url();
-    if (url.includes('/api/graphql') && response.status() === 200) {
+    if (url.includes("/api/graphql") && response.status() === 200) {
       try {
         const text = await response.text();
-        const parts = text.split('\n');
+        const parts = text.split("\n");
         for (const part of parts) {
           if (!part.trim()) continue;
           try {
             const data = JSON.parse(part);
             const strData = JSON.stringify(data);
-            
+
             if (strData.includes("trending") || strData.includes("Barcelona")) {
-               debugPayloads.push(data);
+              debugPayloads.push(data);
             }
-            
+
             if (strData.includes("trending_topic") || strData.includes("BarcelonaSearchTrendingTopicsSectionQuery")) {
-               console.log("Found trending topic payload in network request!");
-               const matches = [...strData.matchAll(/"query":"([^"]+)"/g)];
-               if (matches.length > 0) {
-                 for (const match of matches) {
-                   const kw = match[1];
-                   if (kw && kw.length > 2 && !trendingKeywords.includes(kw)) {
-                     trendingKeywords.push(kw);
-                   }
-                 }
-               }
-               // Try an alternative match just in case
-               const matches2 = [...strData.matchAll(/"keyword":"([^"]+)"/g)];
-               for (const match of matches2) {
-                 const kw = match[1];
-                 if (kw && kw.length > 2 && !trendingKeywords.includes(kw)) {
-                   trendingKeywords.push(kw);
-                 }
-               }
+              console.log("Found trending topic payload in network request!");
+              collectKeywordsFromObject(data, trendingKeywords);
             }
-          } catch(e) {}
+          } catch (e) {
+            // ignore malformed JSON fragments
+          }
         }
-      } catch (e) {}
+      } catch (e) {
+        // ignore response parsing issues
+      }
     }
   });
 
   try {
     await page.goto("https://www.threads.net/search", { waitUntil: "networkidle", timeout: 25000 });
-    await page.waitForTimeout(5000); 
-    
+    await page.waitForTimeout(5000);
+
     const html = await page.content();
     await writeFile("debug.html", html, "utf8");
     await writeFile("debug.json", JSON.stringify(debugPayloads, null, 2), "utf8");
-    
-    if (trendingKeywords.length === 0) {
-      console.log("Network interception found nothing, checking preloaded HTML state...");
-      const matches = [...html.matchAll(/"query":"([^"]+)"/g)];
-      for (const match of matches) {
-        const kw = match[1];
-        if (kw && kw.length > 2 && kw.length < 50 && !trendingKeywords.includes(kw) && !kw.includes("{")) {
-           trendingKeywords.push(kw);
-        }
-      }
+
+    const htmlKeywords = extractKeywordsFromHtml(html);
+    for (const item of htmlKeywords) {
+      addKeyword(trendingKeywords, item);
     }
-    
-    const unique = [...new Set(trendingKeywords)].filter(k => 
-      !k.includes("Follow") && !k.includes("Search") && !k.includes("Threads") && !k.includes("Terms") && !k.includes("Policy")
-    ).slice(0, 15);
-    
-    console.log(`Extracted keywords: ${unique.join(", ")}`);
+
+    const unique = [...new Set(trendingKeywords)]
+      .filter((keyword) => isLikelyKeyword(keyword))
+      .slice(0, 15);
+
+    console.log(`Extracted keywords: ${unique.join(", ") || "(none)"}`);
     return unique.length > 0 ? unique : [];
   } catch (e) {
     console.error("Failed to extract trending keywords", e);
@@ -117,16 +239,16 @@ async function getTrendingKeywords(browser) {
 
 async function main() {
   const browser = await chromium.launch({ headless: true });
-  
+
   const keywords = await getTrendingKeywords(browser);
-  
+
   const result = {
     fetchedAt: new Date().toISOString(),
-    keywords: keywords,
+    keywords,
     total_posts: 0,
     items: []
   };
-  
+
   const indexPayload = {
     generatedAt: new Date().toISOString(),
     categories: [
@@ -138,13 +260,13 @@ async function main() {
       }
     ]
   };
-  
+
   await mkdir("data/trending", { recursive: true });
   await writeFile("data/trending/threads_now.json", JSON.stringify(result, null, 2), "utf8");
   await writeFile("data/index.json", JSON.stringify(indexPayload, null, 2), "utf8");
-  
+
   console.log(`\n✓ wrote data/index.json and data/trending/threads_now.json`);
   await browser.close();
 }
 
-main().catch(e => { console.error("FATAL:", e); process.exit(1); });
+main().catch((e) => { console.error("FATAL:", e); process.exit(1); });
