@@ -26,6 +26,8 @@ jobs:
       
     - name: Collect Data
       run: npm run collect
+      env:
+        THREADS_COOKIE: ${{ secrets.THREADS_COOKIE }}
       
     - name: Commit and Push
       run: |

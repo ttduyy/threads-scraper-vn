@@ -9,11 +9,36 @@ async function getTrendingKeywords(browser) {
   console.log("Navigating to https://www.threads.net/search to extract Trending topics...");
   const context = await browser.newContext({
     userAgent: MOBILE_UA,
-    viewport: { width: 390, height: 844 }
+    viewport: { width: 390, height: 844 },
+    locale: 'vi-VN'
   });
+
+  const rawCookie = process.env.THREADS_COOKIE;
+  if (rawCookie) {
+    console.log("Found THREADS_COOKIE, injecting into context...");
+    try {
+      const parsedCookies = JSON.parse(rawCookie);
+      await context.addCookies(parsedCookies);
+    } catch (e) {
+      console.log("Failed to parse THREADS_COOKIE as JSON, trying as raw string...");
+      // Hỗ trợ truyền sessionid trực tiếp (rất phổ biến)
+      if (rawCookie.includes("=")) {
+        const parts = rawCookie.split(";").map(p => p.trim()).filter(Boolean);
+        const cookies = parts.map(p => {
+          const [name, ...val] = p.split("=");
+          return { name, value: val.join("="), domain: ".threads.net", path: "/" };
+        });
+        await context.addCookies(cookies);
+      } else {
+        await context.addCookies([{ name: "sessionid", value: rawCookie, domain: ".threads.net", path: "/" }]);
+      }
+    }
+  }
+
   const page = await context.newPage();
   
   let trendingKeywords = [];
+  let debugPayloads = [];
 
   page.on('response', async (response) => {
     const url = response.url();
@@ -27,6 +52,10 @@ async function getTrendingKeywords(browser) {
             const data = JSON.parse(part);
             const strData = JSON.stringify(data);
             
+            if (strData.includes("trending") || strData.includes("Barcelona")) {
+               debugPayloads.push(data);
+            }
+            
             if (strData.includes("trending_topic") || strData.includes("BarcelonaSearchTrendingTopicsSectionQuery")) {
                console.log("Found trending topic payload in network request!");
                const matches = [...strData.matchAll(/"query":"([^"]+)"/g)];
@@ -36,6 +65,14 @@ async function getTrendingKeywords(browser) {
                    if (kw && kw.length > 2 && !trendingKeywords.includes(kw)) {
                      trendingKeywords.push(kw);
                    }
+                 }
+               }
+               // Try an alternative match just in case
+               const matches2 = [...strData.matchAll(/"keyword":"([^"]+)"/g)];
+               for (const match of matches2) {
+                 const kw = match[1];
+                 if (kw && kw.length > 2 && !trendingKeywords.includes(kw)) {
+                   trendingKeywords.push(kw);
                  }
                }
             }
@@ -49,9 +86,12 @@ async function getTrendingKeywords(browser) {
     await page.goto("https://www.threads.net/search", { waitUntil: "networkidle", timeout: 25000 });
     await page.waitForTimeout(5000); 
     
+    const html = await page.content();
+    await writeFile("debug.html", html, "utf8");
+    await writeFile("debug.json", JSON.stringify(debugPayloads, null, 2), "utf8");
+    
     if (trendingKeywords.length === 0) {
       console.log("Network interception found nothing, checking preloaded HTML state...");
-      const html = await page.content();
       const matches = [...html.matchAll(/"query":"([^"]+)"/g)];
       for (const match of matches) {
         const kw = match[1];
@@ -63,7 +103,7 @@ async function getTrendingKeywords(browser) {
     
     const unique = [...new Set(trendingKeywords)].filter(k => 
       !k.includes("Follow") && !k.includes("Search") && !k.includes("Threads") && !k.includes("Terms") && !k.includes("Policy")
-    ).slice(0, 15); // Lấy top 15 chủ đề
+    ).slice(0, 15);
     
     console.log(`Extracted keywords: ${unique.join(", ")}`);
     return unique.length > 0 ? unique : [];
@@ -84,7 +124,7 @@ async function main() {
     fetchedAt: new Date().toISOString(),
     keywords: keywords,
     total_posts: 0,
-    items: [] // Không scrape post nữa, chỉ lấy text
+    items: []
   };
   
   const indexPayload = {
