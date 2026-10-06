@@ -2,6 +2,7 @@ import { chromium } from "playwright";
 import { writeFile, mkdir } from "node:fs/promises";
 
 const MOBILE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
+const MAX_LOG_CHARS = 100000; // truncate large HTML/JSON in logs
 
 console.log(`Starting Threads Dynamic Trending Scraper`);
 
@@ -177,6 +178,15 @@ async function getTrendingKeywords(browser) {
   }
 
   const page = await context.newPage();
+  // Forward browser console messages to CI logs so we can see runtime client errors
+  page.on("console", (msg) => {
+    try {
+      console.log(`[page:${msg.type()}] ${msg.text()}`);
+    } catch (err) {
+      console.log(`[page:console] <unserializable console message>`);
+    }
+  });
+
   let trendingKeywords = [];
   let debugPayloads = [];
 
@@ -193,7 +203,7 @@ async function getTrendingKeywords(browser) {
             const strData = JSON.stringify(data);
 
             if (strData.includes("trending") || strData.includes("Barcelona")) {
-              debugPayloads.push(data);
+              debugPayloads.push({ url, snippet: strData.slice(0, 2000) }); // keep small snippet only
             }
 
             if (strData.includes("trending_topic") || strData.includes("BarcelonaSearchTrendingTopicsSectionQuery")) {
@@ -215,8 +225,34 @@ async function getTrendingKeywords(browser) {
     await page.waitForTimeout(5000);
 
     const html = await page.content();
-    await writeFile("debug.html", html, "utf8");
-    await writeFile("debug.json", JSON.stringify(debugPayloads, null, 2), "utf8");
+
+    // Print truncated HTML and network payloads to CI logs (no files, no secrets)
+    const truncatedHtml = typeof html === 'string' && html.length > MAX_LOG_CHARS ? html.slice(0, MAX_LOG_CHARS) + `\n... (truncated ${html.length - MAX_LOG_CHARS} chars)` : html;
+
+    console.log('===DEBUG HTML START===');
+    console.log(truncatedHtml);
+    console.log('===DEBUG HTML END===');
+
+    console.log('===DEBUG NETWORK PAYLOADS START===');
+    try {
+      const payloadString = JSON.stringify(debugPayloads, null, 2);
+      const truncatedPayload = payloadString.length > MAX_LOG_CHARS ? payloadString.slice(0, MAX_LOG_CHARS) + `\n... (truncated ${payloadString.length - MAX_LOG_CHARS} chars)` : payloadString;
+      console.log(truncatedPayload || '(none)');
+    } catch (e) {
+      console.log('(unable to stringify debug payloads)');
+    }
+    console.log('===DEBUG NETWORK PAYLOADS END===');
+
+    // Print cookies metadata only (NO cookie values)
+    try {
+      const ctxCookies = await context.cookies();
+      const cookiesMeta = ctxCookies.map(c => ({ name: c.name, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly, sameSite: c.sameSite }));
+      console.log('===COOKIE METADATA START===');
+      console.log(JSON.stringify(cookiesMeta, null, 2));
+      console.log('===COOKIE METADATA END===');
+    } catch (e) {
+      console.log('Unable to read cookies metadata');
+    }
 
     const htmlKeywords = extractKeywordsFromHtml(html);
     for (const item of htmlKeywords) {
