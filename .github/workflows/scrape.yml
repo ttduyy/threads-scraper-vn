@@ -34,3 +34,5 @@ jobs:
         git add data/
         git commit -m "Auto-update Threads VN trending data" || exit 0
         git push
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
