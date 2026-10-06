@@ -9,52 +9,92 @@ const MOBILE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleW
 
 console.log(`Starting Threads Dynamic Trending Scraper`);
 
-// ==================== 1. Get Trending Keywords from /search ====================
+// ==================== 1. Get Trending Keywords via Network Interception ====================
 async function getTrendingKeywords(browser) {
-  console.log("Navigating to https://www.threads.net/search to extract Trending topics...");
-  const page = await browser.newPage({ userAgent: MOBILE_UA, viewport: { width: 390, height: 844 } });
+  console.log("Navigating to https://www.threads.net/search to extract Trending topics via GraphQL...");
+  const context = await browser.newContext({
+    userAgent: MOBILE_UA,
+    viewport: { width: 390, height: 844 }
+  });
+  const page = await context.newPage();
+  
+  let trendingKeywords = [];
+
+  // Intercept GraphQL responses
+  page.on('response', async (response) => {
+    const url = response.url();
+    if (url.includes('/api/graphql') && response.status() === 200) {
+      try {
+        const text = await response.text();
+        const parts = text.split('\n');
+        for (const part of parts) {
+          if (!part.trim()) continue;
+          try {
+            const data = JSON.parse(part);
+            const strData = JSON.stringify(data);
+            
+            // Check if this chunk contains trending topics
+            if (strData.includes("trending_topic") || strData.includes("BarcelonaSearchTrendingTopicsSectionQuery")) {
+               console.log("Found trending topic payload in network request!");
+               // Find all "query":"<topic>" inside the payload
+               const matches = [...strData.matchAll(/"query":"([^"]+)"/g)];
+               if (matches.length > 0) {
+                 for (const match of matches) {
+                   const kw = match[1];
+                   if (kw && kw.length > 2 && !trendingKeywords.includes(kw)) {
+                     trendingKeywords.push(kw);
+                   }
+                 }
+               }
+            }
+          } catch(e) {}
+        }
+      } catch (e) {}
+    }
+  });
+
   try {
     await page.goto("https://www.threads.net/search", { waitUntil: "networkidle", timeout: 25000 });
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(5000); // Wait for GraphQL requests to settle
     
-    // Scroll a bit
-    try { await page.evaluate(() => window.scrollBy(0, 800)); } catch {}
-    await page.waitForTimeout(1000);
-    
-    // Extract keywords
-    const keywords = await page.evaluate(() => {
-      // Look for search links
-      const links = Array.from(document.querySelectorAll('a[href*="/search?q="]'));
-      let kws = links.map(a => {
-        const url = new URL(a.href, "https://www.threads.net");
-        return url.searchParams.get("q");
-      }).filter(Boolean);
-      
-      // If no search links, fallback to extracting text from common span elements
-      if (kws.length === 0) {
-        kws = Array.from(document.querySelectorAll('span[dir="auto"], div[dir="auto"]'))
-          .map(el => el.innerText.trim())
-          .filter(t => t.length > 2 && t.length < 40 && !t.includes("Follow") && !t.includes("Search"));
+    // Fallback: if network interception didn't catch it, maybe it's baked into the initial HTML
+    if (trendingKeywords.length === 0) {
+      console.log("Network interception found nothing, checking preloaded HTML state...");
+      const html = await page.content();
+      const matches = [...html.matchAll(/"query":"([^"]+)"/g)];
+      for (const match of matches) {
+        const kw = match[1];
+        if (kw && kw.length > 2 && kw.length < 50 && !trendingKeywords.includes(kw) && !kw.includes("{")) {
+           // Basic filter to avoid garbage
+           trendingKeywords.push(kw);
+        }
       }
-      
-      // Unique
-      return [...new Set(kws)].slice(0, 10); // Take top 10 trends
-    });
+    }
     
-    console.log(`Extracted keywords: ${keywords.join(", ")}`);
-    return keywords.length > 0 ? keywords : ["Tin nóng", "Giải trí", "Âm nhạc", "Thể thao"]; // fallback
+    // Keep only unique and take top 10
+    const unique = [...new Set(trendingKeywords)].filter(k => 
+      !k.includes("Follow") && !k.includes("Search") && !k.includes("Threads") && !k.includes("Terms") && !k.includes("Policy")
+    ).slice(0, 10);
+    
+    console.log(`Extracted keywords: ${unique.join(", ")}`);
+    return unique.length > 0 ? unique : ["Tin nóng", "Giải trí", "Âm nhạc", "Thể thao"];
   } catch (e) {
     console.error("Failed to extract trending keywords", e);
-    return ["Tin nóng", "Giải trí", "Âm nhạc", "Thể thao"]; // fallback
+    return ["Tin nóng", "Giải trí", "Âm nhạc", "Thể thao"];
   } finally {
-    await page.close();
+    await context.close();
   }
 }
 
 // ==================== 2. Search Keyword and scrape posts ====================
 async function searchKeyword(browser, keyword, limit = 10) {
   const url = `https://www.threads.net/search?q=${encodeURIComponent(keyword)}&serp_type=default`;
-  const page = await browser.newPage({ userAgent: MOBILE_UA, viewport: { width: 390, height: 844 } });
+  const context = await browser.newContext({
+    userAgent: MOBILE_UA,
+    viewport: { width: 390, height: 844 }
+  });
+  const page = await context.newPage();
+  
   try {
     await page.goto(url, { waitUntil: "networkidle", timeout: 25000 });
     try { await page.waitForSelector('a[href*="/post/"]', { timeout: 5000 }); } catch {}
@@ -80,9 +120,6 @@ async function searchKeyword(browser, keyword, limit = 10) {
         const container = card || a.parentElement;
         const text = ((container && container.innerText) || "").replace(/\s+/g, " ").trim().slice(0, 800);
         
-        // Count rough metrics from DOM if available (like "100 replies", etc)
-        // Usually Threads DOM doesn't show metrics easily in search, but we default to 0
-        
         out.push({
           id: code, 
           username,
@@ -97,7 +134,7 @@ async function searchKeyword(browser, keyword, limit = 10) {
     });
     return posts.slice(0, limit);
   } finally {
-    await page.close();
+    await context.close();
   }
 }
 
@@ -107,7 +144,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 async function main() {
   const browser = await chromium.launch({ headless: true });
   
-  // 1. Get dynamic keywords
+  // 1. Get dynamic keywords via GraphQL interception
   const keywords = await getTrendingKeywords(browser);
   
   const allPosts = [];
@@ -142,7 +179,6 @@ async function main() {
     items: allPosts
   };
   
-  // Create an index.json with path to the file so TramSong can fetch it easily
   const indexPayload = {
     generatedAt: new Date().toISOString(),
     categories: [
