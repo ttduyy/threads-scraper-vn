@@ -1,5 +1,5 @@
 export const KEYWORD_PRESETS = {
-  "Đề xuất chung": ["xu hướng", "hot", "review", "chia sẻ", "mẹo"],
+  "Đề xuất chung": ["xu hướng", "hot", "review", "chia sẻ", "mẹo", "xuhuong"],
   "Tin tức & Sự kiện": ["tin nóng", "tin tức", "sự kiện", "cập nhật", "bão"],
   "Mua sắm & Đời sống": ["shopee", "lazada", "săn sale", "đồ gia dụng", "decor"],
   "Đầu tư & Tài chính": ["chứng khoán", "coin", "bitcoin", "đầu tư", "tiết kiệm"],
@@ -14,7 +14,7 @@ export const KEYWORD_PRESETS = {
   "Thú cưng": ["chó", "mèo", "thú cưng", "pet", "cún"],
   "Xe cộ": ["ô tô", "xe máy", "review xe", "phượt", "xe điện"],
   "Du lịch": ["du lịch", "camping", "đi chơi", "phượt", "khám phá"],
-  "K-POP & Showbiz": ["kpop", "showbiz", "idol", "rap việt", "nghệ sĩ"]
+  "Vpop & Showbiz": ["vpop", "showbiz", "idol", "rap việt", "nghệ sĩ", "ca sĩ"]
 };
 
 export const PRESET_NAMES = Object.keys(KEYWORD_PRESETS);
