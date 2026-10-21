@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-10-21T17:46:40.546Z",
+  "generatedAt": "2026-10-21T21:01:00.673Z",
   "categories": [
     {
       "preset": "Trending Now",
       "path": "data/trending/threads_now.json",
       "total": 0,
-      "fetchedAt": "2026-10-21T17:46:40.546Z"
+      "fetchedAt": "2026-10-21T21:01:00.673Z"
     }
   ]
 }
